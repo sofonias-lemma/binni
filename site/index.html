@@ -374,10 +374,18 @@ for(let L=0;L<5;L++){const t=L===0?'GF':'TY';
     li.shadow.mapSize.set(512,512); li.shadow.bias=-0.003; li.shadow.camera.near=0.1; li.shadow.camera.far=r.d+1; scene.add(li);
     const fx=new THREE.Mesh(fixGeo,fixOff); fx.position.set(r.x,L*3+2.83,-r.y); fx.name='furn_'+L+'_light'; scene.add(fx);
     LIGHTS.push({L,key,li,fx});});}
+// daylight indoors: sky light enters only through windows and outside doors (one soft light just inside each opening)
+const WINL={"GF": [{"x": 6.128, "y": 1.379, "nx": 0, "ny": 1, "w": 1.32}, {"x": 2.167, "y": 2.107, "nx": 0, "ny": 1, "w": 2.19}, {"x": 6.14, "y": 9.34, "nx": 0, "ny": -1, "w": 0.64}, {"x": 4.945, "y": 10.114, "nx": -1, "ny": 0, "w": 1.19}, {"x": 7.09, "y": 10.336, "nx": 1, "ny": 0, "w": 1.04}, {"x": 4.39, "y": 2.2, "nx": 0, "ny": 1, "w": 1.0}], "TY": [{"x": 2.473, "y": 0.004, "nx": 0, "ny": 1, "w": 2.79}, {"x": 6.145, "y": 9.439, "nx": 0, "ny": -1, "w": 0.64}, {"x": 4.95, "y": 10.114, "nx": -1, "ny": 0, "w": 1.19}, {"x": 7.418, "y": 0.004, "nx": 0, "ny": 1, "w": 1.6}, {"x": 9.47, "y": 3.339, "nx": 0, "ny": 1, "w": 0.64}, {"x": 7.095, "y": 10.236, "nx": 1, "ny": 0, "w": 0.84}]};
+const WLIGHTS=[]; const WK=4.5;
+for(let L=0;L<5;L++)WINL[L===0?'GF':'TY'].forEach((w,i)=>{const li=new THREE.PointLight(0xe8efff,WK*w.w,6,2);
+  li.position.set(w.x+w.nx*0.9,L*3+1.6,-(w.y+w.ny*0.9)); li.visible=false; li.userData.full=WK*w.w;
+  li.shadow.mapSize.set(512,512); li.shadow.bias=-0.003; li.shadow.camera.near=0.1; li.shadow.camera.far=7; scene.add(li); WLIGHTS.push({L,key:'W'+i,li})});
+LIGHTS.forEach(o=>o.li.userData.full=o.li.intensity);
 let daylight=true, actL=-1, shadowUntil=0;
 function activeLevel(){return walk?walk.L:Math.min(level,4)}
 function applyLights(){actL=activeLevel();
   LIGHTS.forEach(o=>{const on=lightOn[o.key]; o.li.visible=on&&o.L===actL; o.fx.material=on?fixOnM:fixOff});
+  WLIGHTS.forEach(o=>o.li.visible=daylight&&!!walk&&o.L===actL);
   shadowUntil=performance.now()+400; if(typeof pickCasters==='function')pickCasters(true);
   const t=actL===0?'GF':'TY', box=document.getElementById('lighttog');
   if(box.dataset.t!==t){box.dataset.t=t; box.innerHTML='';
@@ -388,9 +396,9 @@ function applyLights(){actL=activeLevel();
   const any=Object.values(lightOn).some(v=>v); document.getElementById('lightsall').textContent=any?'All lights off':'All lights on';
 }
 function setDay(d){daylight=d; sun.intensity=d?2.4:0.02; hemi.intensity=d?0.8:0.05; if(!window.__envTex)window.__envTex=scene.environment; scene.environment=d?window.__envTex:null;
-  renderer.toneMappingExposure=d?0.82:1.0; document.body.classList.toggle('night',!d);
+  renderer.toneMappingExposure=d?0.82:1.0; inFset=-1; document.body.classList.toggle('night',!d);
   // at night the room lights cast shadows so light stays inside its room; the shadow maps refresh only when something changes
-  sun.castShadow=d; renderer.shadowMap.autoUpdate=d; renderer.shadowMap.needsUpdate=true; pickCasters(true);
+  sun.castShadow=d; renderer.shadowMap.autoUpdate=false; renderer.shadowMap.needsUpdate=true; pickCasters(true);
   CEILM.forEach(m=>m.emissive.setHex(d?0x8a8884:0x0d0d0c));
   document.getElementById('daybtn').setAttribute('aria-pressed',d); document.getElementById('nightbtn').setAttribute('aria-pressed',!d);
   if(!d&&!Object.values(lightOn).some(v=>v)) Object.keys(lightOn).forEach(k=>lightOn[k]=true);
@@ -400,10 +408,22 @@ document.getElementById('nightbtn').onclick=()=>setDay(false);
 document.getElementById('lightsall').onclick=()=>{const any=Object.values(lightOn).some(v=>v); Object.keys(lightOn).forEach(k=>lightOn[k]=!any); applyLights()};
 // in walk mode at night the 4 lit lights nearest the camera cast shadows (keeps light in its room, within GPU limits)
 let casterKey='', casterT=0;
+const NCAST=6; let wasWalk=false;
 function pickCasters(force){
-  const want=(!daylight&&walk)?LIGHTS.filter(o=>o.li.visible).sort((a,b)=>a.li.position.distanceToSquared(cam.position)-b.li.position.distanceToSquared(cam.position)).slice(0,4):[];
+  // in walk mode the lit lights nearest the camera cast shadows so light stays in its room; the others are dimmed to 0 (no leaks through walls)
+  const all=LIGHTS.concat(WLIGHTS).filter(o=>o.li.visible);
+  const want=walk?all.sort((a,b)=>a.li.position.distanceToSquared(cam.position)-b.li.position.distanceToSquared(cam.position)).slice(0,NCAST):[];
   const k=want.map(o=>o.key+o.L).join(',');
-  if(force||k!==casterKey){casterKey=k; LIGHTS.forEach(o=>o.li.castShadow=want.includes(o)); shadowUntil=performance.now()+400}
+  if(force||k!==casterKey){casterKey=k; LIGHTS.concat(WLIGHTS).forEach(o=>{const c=want.includes(o);o.li.castShadow=c;o.li.intensity=(!walk||c)?o.li.userData.full:0}); shadowUntil=performance.now()+400}
+}
+// indoors by day the sky fill and reflections fade out, so rooms are lit only by sun and openings; the eye adapts a little
+let MATS=null, inF=0, inFset=-1;
+function indoorAmbient(dt){
+  const tgt=(walk&&daylight&&insideHouse())?1:0; inF+=(tgt-inF)*Math.min(1,dt*2.5); if(window.__snapAmb)inF=tgt;
+  if(Math.abs(inF-inFset)<0.01)return; inFset=inF;
+  if(!MATS||MATS.size<40){MATS=new Set();scene.traverse(o=>{if(o.isMesh)(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>{if('envMapIntensity' in m)MATS.add(m)})})}
+  const e=1-0.93*inF; MATS.forEach(m=>m.envMapIntensity=e);
+  if(daylight){hemi.intensity=0.8-0.74*inF; renderer.toneMappingExposure=0.82+0.38*inF; const c=new THREE.Color(0x8a8884).multiplyScalar(1-0.95*inF); CEILM.forEach(m=>m.emissive.copy(c))}
 }
 renderer.domElement.addEventListener('pointerup',()=>{shadowUntil=performance.now()+1800});
 window.__setDay=setDay;window.__scene=scene; window.__lightOn=lightOn; window.__applyLights=applyLights;
@@ -414,7 +434,7 @@ function roomHere(){const L=walk.L; let best=null,bd=1e9;
     let seen=true; if(d>0.05){_lv.divideScalar(d);lr.set(cam.position,_lv);lr.far=d;seen=!lr.intersectObjects(colliders,false).some(h=>/walls_|cols_/.test(h.object.name+' '+(h.object.parent?.name||'')))}
     const sc=d+(seen?0:100); if(sc<bd){bd=sc;best=o}}
   return best&&bd<100&&(walk.feet>-0.05&&insideHouse())?best:null}
-const HBOX={}; function insideHouse(){const L=walk.L;if(!HBOX[L]){const b=new THREE.Box3();scene.traverse(o=>{if(o.isMesh&&new RegExp('walls_'+L).test(o.name+' '+(o.parent?.name||'')))b.expandByObject(o)});HBOX[L]=b}
+const HBOX={}; function insideHouse(){if(!walk)return false;const L=walk.L;if(!HBOX[L]){const b=new THREE.Box3();scene.traverse(o=>{if(o.isMesh&&new RegExp('walls_'+L).test(o.name+' '+(o.parent?.name||'')))b.expandByObject(o)});HBOX[L]=b}
   const b=HBOX[L],p=cam.position; if(b.isEmpty())return true; if(!(p.x>b.min.x&&p.x<b.max.x&&p.z>b.min.z&&p.z<b.max.z))return false;
   if(L===0&&-p.z<2.0)return false; return true}
 function updLightBtn(){const o=walk&&roomHere(); hereKey=o?o.key:null; if(!o){lightBtn.textContent='No room light here';lightBtn.setAttribute('aria-pressed',false);return}
@@ -423,7 +443,7 @@ function updLightBtn(){const o=walk&&roomHere(); hereKey=o?o.key:null; if(!o){li
 function toggleHere(){if(!walk)return; updLightBtn(); if(!hereKey)return; lightOn[hereKey]=!lightOn[hereKey]; applyLights(); updLightBtn()}
 lightBtn.addEventListener('pointerdown',e=>e.preventDefault()); lightBtn.onclick=toggleHere;
 addEventListener('keydown',e=>{if(walk&&e.code==='KeyL'&&e.target.tagName!=='SELECT'&&!e.repeat)toggleHere()});
-(function loop(){const dt=Math.min(clk.getDelta(),0.1);if(walk){const n=performance.now();if(n-hereT>300){hereT=n;updLightBtn()}}if(activeLevel()!==actL)applyLights();if(!daylight){const now=performance.now();if(now-casterT>500){casterT=now;pickCasters(false)}if(now<shadowUntil)renderer.shadowMap.needsUpdate=true;}animDoors(dt);if(walk)stepWalk(dt);else controls.update();renderer.render(scene,cam);requestAnimationFrame(loop)})();
+(function loop(){const dt=Math.min(clk.getDelta(),0.1);if(walk){const n=performance.now();if(n-hereT>300){hereT=n;updLightBtn()}}if(activeLevel()!==actL)applyLights();{const now=performance.now();if(now-casterT>500){casterT=now;pickCasters(false)}if(now<shadowUntil)renderer.shadowMap.needsUpdate=true;}if(walk&&!walk.wasW){walk.wasW=1;applyLights()}if(!walk&&wasWalk)applyLights();wasWalk=!!walk;indoorAmbient(dt);animDoors(dt);if(walk)stepWalk(dt);else controls.update();renderer.render(scene,cam);requestAnimationFrame(loop)})();
 window.__walk=()=>walk;window.__enterWalk=enterWalk;window.__goTo=goTo;window.__pivots=pivots;window.__cam=cam;window.__setLevel=setLevel;window.__closeAll=()=>document.getElementById('doorbtn').click();
 </script>
 
