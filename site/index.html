@@ -253,12 +253,12 @@ function enterWalk(){
   Object.assign(savedCam,{p:cam.position.clone(),t:controls.target.clone(),fov:cam.fov,L:level});
   walk={yaw:0,pitch:0,L:0,keys:{},vx:0,vz:0}; controls.enabled=false; cam.fov=68; cam.near=0.05; cam.updateProjectionMatrix();
   document.body.classList.add('walking'); document.getElementById('walkbtn').setAttribute('aria-pressed','true'); document.getElementById('walkbtn').textContent='Exit walk';
-  document.getElementById('hint').textContent='Drag to look · W A S D or arrow keys to move · hold Shift to walk faster · L switches the room light · walk up the stairs to change floor · click a door to open or close it · pick a room in the menu';
-  goStart();
+  setWalkHint();
+  goStart(); lockMouse();
 }
 function exitWalk(){
   joyEnd();runOn(false);lookId=null;
-  walk=null; document.body.classList.remove('walking'); cam.fov=savedCam.fov; cam.near=0.1; cam.updateProjectionMatrix();
+  walk=null; if(isLocked())document.exitPointerLock(); document.body.classList.remove('walking'); cam.fov=savedCam.fov; cam.near=0.1; cam.updateProjectionMatrix();
   cam.position.copy(savedCam.p); controls.target.copy(savedCam.t); controls.enabled=true; setLevel(savedCam.L);
   document.getElementById('walkbtn').setAttribute('aria-pressed','false'); document.getElementById('walkbtn').textContent='Walk through';
   document.getElementById('hint').textContent='Drag to rotate · scroll or pinch to zoom · right-drag to pan · click a door to open or close it';
@@ -266,7 +266,7 @@ function exitWalk(){
 document.getElementById('walkbtn').onclick=()=>walk?exitWalk():enterWalk();
 // floor buttons teleport while walking
 document.querySelectorAll('.floors button').forEach((b,i)=>{const f=b.onclick;b.onclick=()=>{if(walk){if(i>4)return;goTo(WALKPTS.findIndex(w=>w.L===i&&/Living/.test(w.name)))}else f()}});
-addEventListener('keydown',e=>{if(!walk)return;if(e.target.tagName==='SELECT')return;if(e.key==='Escape'){exitWalk();return}
+addEventListener('keydown',e=>{if(!walk)return;if(e.target.tagName==='SELECT')return;if(e.key==='Escape'){if(isLocked()||performance.now()-lockT<300)return;exitWalk();return}
   walk.keys[e.code]=true; if(/Arrow|Space/.test(e.code))e.preventDefault()});
 addEventListener('keyup',e=>{if(walk)walk.keys[e.code]=false});
 // pointer: drag to look (walk) / click to toggle doors (both modes). Each finger is tracked by pointerId.
@@ -284,10 +284,26 @@ function joyStart(e){joyId=e.pointerId;joy.cx=e.clientX;joy.cy=e.clientY;joy.x=j
 function joyMove(e){let dx=e.clientX-joy.cx,dy=e.clientY-joy.cy;const l=Math.hypot(dx,dy);if(l>JR){dx*=JR/l;dy*=JR/l}
   knob.style.transform='translate('+dx+'px,'+dy+'px)';let m=Math.min(1,l/JR);m=m<DEAD?0:(m-DEAD)/(1-DEAD);const a=Math.atan2(dy,dx);joy.x=Math.cos(a)*m;joy.y=Math.sin(a)*m}
 function joyEnd(){joyId=null;joy.x=joy.y=0;joyEl.classList.remove('on');joyRest()}
+// mouse look: on a computer the mouse turns the view without holding a button (pointer lock).
+// Esc frees the cursor (to use the menu); a click on the view takes it back. Falls back to drag-to-look if the browser refuses.
+const FINE=matchMedia('(pointer:fine)').matches; let noLock=!('requestPointerLock' in cv), lockT=0;
+function isLocked(){return document.pointerLockElement===cv}
+function lockMouse(){if(!walk||!FINE||noLock||isLocked())return;try{const r=cv.requestPointerLock();if(r&&r.catch)r.catch(()=>{noLock=true;setWalkHint()})}catch(e){noLock=true;setWalkHint()}}
+function setWalkHint(){if(!walk)return;const h=document.getElementById('hint');
+  const tail=' · W A S D or arrow keys to move · hold Shift to walk faster · L switches the room light · walk up the stairs to change floor · ';
+  if(!FINE||noLock)h.textContent='Drag to look'+tail+'click a door to open or close it · pick a room in the menu';
+  else if(isLocked())h.textContent='Move the mouse to look'+tail+'click a door (at the cross) to open or close it · Esc frees the cursor for the menu';
+  else h.textContent='Click the view to look with the mouse'+tail+'pick a room in the menu · Esc again exits walk'}
+document.addEventListener('pointerlockchange',()=>{lockT=performance.now();if(!isLocked()&&walk){pd=null;lookId=null}setWalkHint()});
+document.addEventListener('pointerlockerror',()=>{noLock=true;setWalkHint()});
+document.addEventListener('mousemove',e=>{if(!walk||!isLocked())return;const dx=e.movementX||0,dy=e.movementY||0;
+  if(Math.abs(dx)>250||Math.abs(dy)>250)return; // drop the odd jump some browsers report
+  look(dx,dy)});
 function look(dx,dy){const k=SENS[sens];walk.yaw-=dx*k;walk.pitch=Math.max(-PMAX,Math.min(PMAX,walk.pitch-dy*k));applyLook()}
 cv.addEventListener('pointerdown',e=>{
   if(walk&&e.pointerType==='touch'&&joyId===null&&inJoyZone(e)){e.preventDefault();cv.setPointerCapture(e.pointerId);joyStart(e);return}
   if(walk&&lookId!==null&&e.pointerId!==lookId)return; // a second look finger is ignored
+  if(walk&&e.pointerType==='mouse'&&FINE&&!noLock){if(!isLocked()){pd=null;lockMouse()}else{pd={x:0,y:0,lx:0,ly:0,moved:false,center:true}}return}
   pd={x:e.clientX,y:e.clientY,lx:e.clientX,ly:e.clientY,moved:false}; if(walk){lookId=e.pointerId;cv.setPointerCapture(e.pointerId)}});
 cv.addEventListener('pointermove',e=>{
   if(walk&&e.pointerId===joyId){joyMove(e);return}
@@ -296,7 +312,7 @@ cv.addEventListener('pointermove',e=>{
 function ptrEnd(e,cancel){
   if(e.pointerId===joyId){joyEnd();return}
   if(walk&&lookId!==null&&e.pointerId!==lookId)return;
-  if(!cancel&&pd&&!pd.moved)pickDoor(e.clientX,e.clientY); pd=null; lookId=null}
+  if(!cancel&&pd&&!pd.moved){if(pd.center){const r=cv.getBoundingClientRect();pickDoor(r.left+r.width/2,r.top+r.height/2)}else pickDoor(e.clientX,e.clientY)} pd=null; lookId=null}
 cv.addEventListener('pointerup',e=>ptrEnd(e,false));
 cv.addEventListener('pointercancel',e=>ptrEnd(e,true));
 cv.addEventListener('lostpointercapture',e=>{if(e.pointerId===joyId)joyEnd();else if(e.pointerId===lookId){pd=null;lookId=null}});
